@@ -21,7 +21,9 @@ void read_sensor_data(int fd, unsigned int cmd, const char *label) {
     if (cmd == IOCTL_GET_TEMPERATURE) {
         printf("%s: %.2f °C\n", label, value / 100.0);
     } else if (cmd == IOCTL_GET_HUMIDITY) {
-        printf("%s: %f %%\n", label, value / 100.0);
+        printf("%s: %.2f %%\n", label, value / 10.0);
+        //also print raw value
+        printf("%s: %d\n", label, value);
     } else if (cmd == IOCTL_GET_PRESSURE) {
         printf("%s: %.2f hPa\n", label, value / 100.0);
     }
