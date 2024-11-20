@@ -23,7 +23,7 @@ void read_sensor_data(int fd, unsigned int cmd, const char *label) {
     } else if (cmd == IOCTL_GET_HUMIDITY) {
         printf("%s: %.2f %%\n", label, value / 1024.0);  // Match driver scaling for humidity
     } else if (cmd == IOCTL_GET_PRESSURE) {
-        printf("%s: %.2f hPa\n", label, value / 256.0);  // Typical pressure scaling
+        printf("%s: %.2f hPa\n", label, value / 100.0);
     }
 }
 
