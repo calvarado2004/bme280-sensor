@@ -76,10 +76,14 @@ enum MHD_Result metrics_handler(void *cls, struct MHD_Connection *connection,
              "pressure_hpa %.2f\n",
              temperature_celsius, temperature_fahrenheit, humidity, pressure);
 
+    printf("Updated: %.2f C, %.2f F, %.2f %%, %.2f hPa\n",
+       temperature_celsius, temperature_fahrenheit, humidity, pressure);
+
     pthread_mutex_unlock(&data_mutex);
 
     struct MHD_Response *response = MHD_create_response_from_buffer(strlen(metrics),
                                                                      (void *)metrics, MHD_RESPMEM_PERSISTENT);
+    MHD_add_response_header(response, MHD_HTTP_HEADER_CACHE_CONTROL, "no-cache");
     int ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
     MHD_destroy_response(response);
 
