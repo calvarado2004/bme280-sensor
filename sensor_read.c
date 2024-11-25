@@ -49,9 +49,9 @@ void read_sensor_data(int fd) {
 }
 
 // Function to serve Prometheus metrics
-int metrics_handler(void *cls, struct MHD_Connection *connection,
-                    const char *url, const char *method, const char *version,
-                    const char *upload_data, size_t *upload_data_size, void **ptr) {
+enum MHD_Result metrics_handler(void *cls, struct MHD_Connection *connection,
+                                 const char *url, const char *method, const char *version,
+                                 const char *upload_data, size_t *upload_data_size, void **ptr) {
     (void)cls; (void)upload_data; (void)upload_data_size; (void)ptr;
 
     if (strcmp(method, "GET") != 0) {
@@ -83,7 +83,7 @@ int metrics_handler(void *cls, struct MHD_Connection *connection,
     int ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
     MHD_destroy_response(response);
 
-    return ret;
+    return ret == MHD_YES ? MHD_YES : MHD_NO; // Ensure correct return type
 }
 
 // Thread for the HTTP server
