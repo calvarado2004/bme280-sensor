@@ -1,6 +1,6 @@
 CC ?= gcc
 CFLAGS ?= -Wall
-LDFLAGS ?=
+LDFLAGS ?= -lmicrohttpd
 
 all: bme_sensor
 
