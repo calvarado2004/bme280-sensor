@@ -95,11 +95,15 @@ enum MHD_Result metrics_handler(void *cls, struct MHD_Connection *connection,
 
     struct MHD_Response *response = MHD_create_response_from_buffer(strlen(metrics),
                                                                      (void *)metrics, MHD_RESPMEM_PERSISTENT);
+
+    // Add Content-Type header for Prometheus
+    MHD_add_response_header(response, MHD_HTTP_HEADER_CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8");
     MHD_add_response_header(response, MHD_HTTP_HEADER_CACHE_CONTROL, "no-cache");
+
     int ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
     MHD_destroy_response(response);
 
-    return ret;
+    return ret == MHD_YES ? MHD_YES : MHD_NO;
 }
 
 // Thread for the HTTP server
@@ -112,6 +116,7 @@ void *http_server_thread(void *arg) {
     }
 
     syslog(LOG_INFO, "HTTP server started on port %d\n", HTTP_PORT);
+    fflush(stdout);
 
     while (keep_running) {
         sleep(1);
@@ -155,12 +160,12 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
 
-        if (freopen(LOG_FILE, "w", stdout) == NULL) {
+        if (freopen(LOG_FILE, "a", stdout) == NULL) {
             perror("Failed to redirect stdout to log file");
             exit(EXIT_FAILURE);
         }
 
-        if (freopen(LOG_FILE, "w", stderr) == NULL) {
+        if (freopen(LOG_FILE, "a", stderr) == NULL) {
             perror("Failed to redirect stderr to log file");
             exit(EXIT_FAILURE);
         }
@@ -190,12 +195,16 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
+    syslog(LOG_INFO, "BME280 Sensor Program started successfully.");
+    fflush(stdout);
+
     while (keep_running) {
         read_sensor_data(fd);
         sleep(10);
     }
 
     syslog(LOG_INFO, "Shutting down...\n");
+    fflush(stdout);
 
     close(fd);
     pthread_join(server_thread, NULL);
