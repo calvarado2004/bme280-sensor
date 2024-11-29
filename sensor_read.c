@@ -6,6 +6,10 @@
 #include <pthread.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <syslog.h>
+#include <getopt.h>
 #include <microhttpd.h>
 
 #define DEVICE_PATH "/dev/bme280"
@@ -13,17 +17,30 @@
 #define IOCTL_GET_HUMIDITY _IOR('B', 2, int)
 #define IOCTL_GET_PRESSURE _IOR('B', 3, int)
 #define HTTP_PORT 8080
+#define PID_FILE "/var/run/bme280_sensor.pid"
+#define LOG_FILE "/var/log/bme280_sensor.log"
 
 // Global variables
 float temperature_celsius = 0.0, temperature_fahrenheit = 0.0, humidity = 0.0, pressure = 0.0;
 pthread_mutex_t data_mutex = PTHREAD_MUTEX_INITIALIZER;
 volatile sig_atomic_t keep_running = 1;  // Flag to control program termination
-struct MHD_Daemon *http_server;  // Renamed from daemon
+struct MHD_Daemon *http_server;
 
 // Signal handler
 void handle_signal(int sig) {
-    printf("\nCaught signal %d. Shutting down...\n", sig);
+    syslog(LOG_INFO, "Caught signal %d. Shutting down...\n", sig);
     keep_running = 0;
+}
+
+// Function to write the PID file
+void write_pid_file() {
+    FILE *pid_file = fopen(PID_FILE, "w");
+    if (pid_file) {
+        fprintf(pid_file, "%d\n", getpid());
+        fclose(pid_file);
+    } else {
+        syslog(LOG_ERR, "Failed to write PID file: %s\n", PID_FILE);
+    }
 }
 
 // Function to read sensor data
@@ -50,10 +67,8 @@ void read_sensor_data(int fd) {
 
 // Function to serve Prometheus metrics
 enum MHD_Result metrics_handler(void *cls, struct MHD_Connection *connection,
-                                 const char *url, const char *method, const char *version,
-                                 const char *upload_data, size_t *upload_data_size, void **ptr) {
-    (void)cls; (void)upload_data; (void)upload_data_size; (void)ptr;
-
+                                const char *url, const char *method, const char *version,
+                                const char *upload_data, size_t *upload_data_size, void **ptr) {
     if (strcmp(method, "GET") != 0) {
         return MHD_NO;
     }
@@ -76,9 +91,6 @@ enum MHD_Result metrics_handler(void *cls, struct MHD_Connection *connection,
              "pressure_hpa %.2f\n",
              temperature_celsius, temperature_fahrenheit, humidity, pressure);
 
-    printf("Updated: %.2f C, %.2f F, %.2f %%, %.2f hPa\n",
-       temperature_celsius, temperature_fahrenheit, humidity, pressure);
-
     pthread_mutex_unlock(&data_mutex);
 
     struct MHD_Response *response = MHD_create_response_from_buffer(strlen(metrics),
@@ -87,7 +99,7 @@ enum MHD_Result metrics_handler(void *cls, struct MHD_Connection *connection,
     int ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
     MHD_destroy_response(response);
 
-    return ret == MHD_YES ? MHD_YES : MHD_NO; // Ensure correct return type
+    return ret;
 }
 
 // Thread for the HTTP server
@@ -95,13 +107,12 @@ void *http_server_thread(void *arg) {
     http_server = MHD_start_daemon(MHD_USE_SELECT_INTERNALLY, HTTP_PORT, NULL, NULL,
                                    &metrics_handler, NULL, MHD_OPTION_END);
     if (!http_server) {
-        fprintf(stderr, "Failed to start HTTP server\n");
+        syslog(LOG_ERR, "Failed to start HTTP server\n");
         return NULL;
     }
 
-    printf("HTTP server started on port %d\n", HTTP_PORT);
+    syslog(LOG_INFO, "HTTP server started on port %d\n", HTTP_PORT);
 
-    // Keep the thread running until the program is terminated
     while (keep_running) {
         sleep(1);
     }
@@ -110,36 +121,80 @@ void *http_server_thread(void *arg) {
     return NULL;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+    int daemonize = 0;
+    int opt;
+
+    // Parse command-line options
+    while ((opt = getopt(argc, argv, "d")) != -1) {
+        switch (opt) {
+            case 'd':
+                daemonize = 1;
+                break;
+            default:
+                fprintf(stderr, "Usage: %s [-d]\n", argv[0]);
+                exit(EXIT_FAILURE);
+        }
+    }
+
+    if (daemonize) {
+        pid_t pid = fork();
+        if (pid < 0) {
+            perror("Failed to fork");
+            exit(EXIT_FAILURE);
+        }
+        if (pid > 0) {
+            exit(EXIT_SUCCESS);
+        }
+
+        umask(0);
+        setsid();
+
+        if (chdir("/") < 0) {
+            perror("Failed to change directory to root");
+            exit(EXIT_FAILURE);
+        }
+
+        freopen(LOG_FILE, "w", stdout);
+        freopen(LOG_FILE, "w", stderr);
+
+        write_pid_file();
+    }
+
+    openlog("bme280_sensor", LOG_PID | LOG_CONS, LOG_DAEMON);
+
     // Set up signal handling
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = handle_signal;
-    sigaction(SIGINT, &sa, NULL);  // Handle CTRL+C
-    sigaction(SIGTERM, &sa, NULL);  // Handle termination signal
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
     int fd = open(DEVICE_PATH, O_RDONLY);
     if (fd < 0) {
-        perror("Failed to open the device");
+        syslog(LOG_ERR, "Failed to open the device: %s\n", DEVICE_PATH);
         return EXIT_FAILURE;
     }
 
     pthread_t server_thread;
     if (pthread_create(&server_thread, NULL, http_server_thread, NULL) != 0) {
-        perror("Failed to create HTTP server thread");
+        syslog(LOG_ERR, "Failed to create HTTP server thread\n");
         close(fd);
         return EXIT_FAILURE;
     }
 
     while (keep_running) {
         read_sensor_data(fd);
-        sleep(10);  // Read sensor data every 10 seconds
+        sleep(10);
     }
 
-    printf("Shutting down...\n");
+    syslog(LOG_INFO, "Shutting down...\n");
 
     close(fd);
     pthread_join(server_thread, NULL);
+
+    remove(PID_FILE);
+    closelog();
 
     return EXIT_SUCCESS;
 }
