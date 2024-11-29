@@ -155,8 +155,15 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
 
-        freopen(LOG_FILE, "w", stdout);
-        freopen(LOG_FILE, "w", stderr);
+        if (freopen(LOG_FILE, "w", stdout) == NULL) {
+            perror("Failed to redirect stdout to log file");
+            exit(EXIT_FAILURE);
+        }
+
+        if (freopen(LOG_FILE, "w", stderr) == NULL) {
+            perror("Failed to redirect stderr to log file");
+            exit(EXIT_FAILURE);
+        }
 
         write_pid_file();
     }
