@@ -11,6 +11,7 @@
 #include <syslog.h>
 #include <getopt.h>
 #include <microhttpd.h>
+#include <time.h>
 
 #define DEVICE_PATH "/dev/bme280"
 #define IOCTL_GET_TEMPERATURE _IOR('B', 1, int)
@@ -26,9 +27,13 @@ pthread_mutex_t data_mutex = PTHREAD_MUTEX_INITIALIZER;
 volatile sig_atomic_t keep_running = 1;  // Flag to control program termination
 struct MHD_Daemon *http_server;
 
+// File pointer for logging
+FILE *log_file = NULL;
+
 // Signal handler
 void handle_signal(int sig) {
-    syslog(LOG_INFO, "Caught signal %d. Shutting down...\n", sig);
+    fprintf(log_file, "Caught signal %d. Shutting down...\n", sig);
+    fflush(log_file);
     keep_running = 0;
 }
 
@@ -39,8 +44,25 @@ void write_pid_file() {
         fprintf(pid_file, "%d\n", getpid());
         fclose(pid_file);
     } else {
-        syslog(LOG_ERR, "Failed to write PID file: %s\n", PID_FILE);
+        fprintf(log_file, "Failed to write PID file: %s\n", PID_FILE);
+        fflush(log_file);
     }
+}
+
+// Function to write logs with timestamps
+void log_with_timestamp(const char *format, ...) {
+    va_list args;
+    time_t now = time(NULL);
+    struct tm *local_time = localtime(&now);
+
+    fprintf(log_file, "[%04d-%02d-%02d %02d:%02d:%02d] ",
+            local_time->tm_year + 1900, local_time->tm_mon + 1, local_time->tm_mday,
+            local_time->tm_hour, local_time->tm_min, local_time->tm_sec);
+
+    va_start(args, format);
+    vfprintf(log_file, format, args);
+    va_end(args);
+    fflush(log_file);
 }
 
 // Function to read sensor data
@@ -63,6 +85,9 @@ void read_sensor_data(int fd) {
     }
 
     pthread_mutex_unlock(&data_mutex);
+
+    log_with_timestamp("Sensor readings - Temp: %.2f°C, %.2f°F, Humidity: %.2f%%, Pressure: %.2f hPa\n",
+                       temperature_celsius, temperature_fahrenheit, humidity, pressure);
 }
 
 // Function to serve Prometheus metrics
@@ -96,7 +121,7 @@ enum MHD_Result metrics_handler(void *cls, struct MHD_Connection *connection,
     struct MHD_Response *response = MHD_create_response_from_buffer(strlen(metrics),
                                                                      (void *)metrics, MHD_RESPMEM_PERSISTENT);
 
-    // Add Content-Type header for Prometheus
+    // Add the required Content-Type header
     MHD_add_response_header(response, MHD_HTTP_HEADER_CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8");
     MHD_add_response_header(response, MHD_HTTP_HEADER_CACHE_CONTROL, "no-cache");
 
@@ -111,12 +136,11 @@ void *http_server_thread(void *arg) {
     http_server = MHD_start_daemon(MHD_USE_SELECT_INTERNALLY, HTTP_PORT, NULL, NULL,
                                    &metrics_handler, NULL, MHD_OPTION_END);
     if (!http_server) {
-        syslog(LOG_ERR, "Failed to start HTTP server\n");
+        log_with_timestamp("Failed to start HTTP server\n");
         return NULL;
     }
 
-    syslog(LOG_INFO, "HTTP server started on port %d\n", HTTP_PORT);
-    fflush(stdout);
+    log_with_timestamp("HTTP server started on port %d\n", HTTP_PORT);
 
     while (keep_running) {
         sleep(1);
@@ -160,17 +184,15 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
 
-        if (freopen(LOG_FILE, "a", stdout) == NULL) {
-            perror("Failed to redirect stdout to log file");
-            exit(EXIT_FAILURE);
-        }
-
-        if (freopen(LOG_FILE, "a", stderr) == NULL) {
-            perror("Failed to redirect stderr to log file");
+        log_file = fopen(LOG_FILE, "a");
+        if (!log_file) {
+            perror("Failed to open log file");
             exit(EXIT_FAILURE);
         }
 
         write_pid_file();
+    } else {
+        log_file = stdout;  // In foreground mode, log to stdout
     }
 
     openlog("bme280_sensor", LOG_PID | LOG_CONS, LOG_DAEMON);
@@ -184,32 +206,31 @@ int main(int argc, char *argv[]) {
 
     int fd = open(DEVICE_PATH, O_RDONLY);
     if (fd < 0) {
-        syslog(LOG_ERR, "Failed to open the device: %s\n", DEVICE_PATH);
+        log_with_timestamp("Failed to open the device: %s\n", DEVICE_PATH);
         return EXIT_FAILURE;
     }
 
     pthread_t server_thread;
     if (pthread_create(&server_thread, NULL, http_server_thread, NULL) != 0) {
-        syslog(LOG_ERR, "Failed to create HTTP server thread\n");
+        log_with_timestamp("Failed to create HTTP server thread\n");
         close(fd);
         return EXIT_FAILURE;
     }
 
-    syslog(LOG_INFO, "BME280 Sensor Program started successfully.");
-    fflush(stdout);
+    log_with_timestamp("BME280 Sensor Program started successfully.\n");
 
     while (keep_running) {
         read_sensor_data(fd);
         sleep(10);
     }
 
-    syslog(LOG_INFO, "Shutting down...\n");
-    fflush(stdout);
+    log_with_timestamp("Shutting down...\n");
 
     close(fd);
     pthread_join(server_thread, NULL);
 
     remove(PID_FILE);
+    if (log_file && log_file != stdout) fclose(log_file);
     closelog();
 
     return EXIT_SUCCESS;
